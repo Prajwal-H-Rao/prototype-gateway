@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/test/api", (req, response) => {
-  response.json({ message: "Hello from the server!" });
+  response.json({ message: "Hello from the server!", status: "success" });
 });
 
 app.listen(PORT, () => {
