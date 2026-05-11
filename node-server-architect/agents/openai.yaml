@@ -1,0 +1,4 @@
+interface:
+  display_name: "Node Server Architect"
+  short_description: "Scaffold + review Node.js TypeScript servers"
+  default_prompt: "Create or refactor a Node.js backend with a clean directory structure, then review the codebase for performance, security risks, TypeScript correctness, and formatting/linting setup. Produce concrete patches and a short report."
