@@ -2,12 +2,23 @@ export const setupSocketHandlers = (io) => {
   io.on("connection", (socket) => {
     console.log(`Client connected: ${socket.id}`);
 
+    let commandBuffer = "";
+
     // Handle terminal input from client
     socket.on("input", (data) => {
-      console.log(`Received input: ${data}`);
-      // Process input as needed (e.g., execute commands, send to terminal)
-      // For now, echo it back with output event
-      socket.emit("output", `Processed: ${data}`);
+      commandBuffer += data;
+
+      // Check if a complete command was received (contains newline/Enter)
+      if (commandBuffer.includes("\n") || commandBuffer.includes("\r")) {
+        const command = commandBuffer.trim();
+        console.log(`Complete command received: ${command}`);
+
+        // Process command and send response only when complete
+        socket.emit("output", `Processed: ${command}\n`);
+
+        // Reset buffer for next command
+        commandBuffer = "";
+      }
     });
 
     // Handle client disconnect
