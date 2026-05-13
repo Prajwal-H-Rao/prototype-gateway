@@ -14,7 +14,7 @@ export const setupSocketHandlers = (io) => {
         console.log(`Complete command received: ${command}`);
 
         // Process command and send response only when complete
-        socket.emit("output", `Processed: ${command}\n`);
+        socket.emit("output", `${command}`);
 
         // Reset buffer for next command
         commandBuffer = "";
