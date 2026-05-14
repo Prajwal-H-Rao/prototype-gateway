@@ -1,6 +1,6 @@
-import express, { response } from "express";
+import express from "express";
 import cors from "cors";
-import { initializeSocketServer } from "./socket-server.js";
+import { initializeSocketServer } from "./socket/socket-server.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;

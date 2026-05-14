@@ -1,34 +1,97 @@
+import { startDockerSandbox } from "./sandbox/docker-sandbox.js";
+
+const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 min
+
 export const setupSocketHandlers = (io) => {
   io.on("connection", (socket) => {
-    console.log(`Client connected: ${socket.id}`);
+    void handleSocketConnection(socket);
+  });
+};
 
-    let commandBuffer = "";
+async function handleSocketConnection(socket) {
+  console.log(`Client connected: ${socket.id}`);
 
-    // Handle terminal input from client
+  let sandbox = null;
+  let timeoutId = null;
+  let cleanedUp = false;
+
+  const cleanup = async (reason) => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+
+    if (timeoutId) clearTimeout(timeoutId);
+
+    try {
+      if (sandbox) await sandbox.stop();
+    } catch (err) {
+      console.error(`Cleanup error for ${socket.id} (${reason}):`, err);
+    } finally {
+      sandbox = null;
+    }
+  };
+
+  socket.once("disconnect", (reason) => {
+    console.log(`Client disconnected: ${socket.id} (${reason})`);
+    void cleanup("disconnect");
+  });
+
+  socket.on("error", (error) => {
+    console.error(`Socket error for ${socket.id}:`, error);
+  });
+
+  try {
+    sandbox = await startDockerSandbox({ image: "secure-web-ide" });
+
+    // If the client disconnected while the sandbox was starting, stop immediately.
+    if (cleanedUp || socket.disconnected) {
+      await sandbox.stop();
+      sandbox = null;
+      return;
+    }
+
+    console.log(`Container started: ${sandbox.container.id}`);
+
+    // Stream stdout/stderr to client
+    sandbox.shellProcess.stdout.on("data", (data) => {
+      if (!socket.disconnected) socket.emit("output", data.toString());
+    });
+
+    sandbox.shellProcess.stderr.on("data", (data) => {
+      if (!socket.disconnected) socket.emit("output", data.toString());
+    });
+
+    // Forward terminal input to the shell
     socket.on("input", (data) => {
-      commandBuffer += data;
-
-      // Check if a complete command was received (contains newline/Enter)
-      if (commandBuffer.includes("\n") || commandBuffer.includes("\r")) {
-        const command = commandBuffer.trim();
-        console.log(`Complete command received: ${command}`);
-
-        // Process command and send response only when complete
-        socket.emit("output", `${command}`);
-
-        // Reset buffer for next command
-        commandBuffer = "";
+      if (!sandbox) return;
+      if (sandbox.shellProcess.stdin.writable) {
+        sandbox.shellProcess.stdin.write(data);
       }
     });
 
-    // Handle client disconnect
-    socket.on("disconnect", () => {
-      console.log(`Client disconnected: ${socket.id}`);
+    // Shell exit
+    sandbox.shellProcess.on("close", (code) => {
+      if (!socket.disconnected) {
+        socket.emit("output", `\r\nProcess exited with code ${code}\r\n`);
+      }
+      void cleanup("shell-close");
     });
 
-    // Handle errors
-    socket.on("error", (error) => {
-      console.error(`Socket error for ${socket.id}:`, error);
-    });
-  });
-};
+    // Auto timeout
+    timeoutId = setTimeout(async () => {
+      try {
+        if (!socket.disconnected) socket.emit("output", "\r\nSession expired\r\n");
+      } finally {
+        await cleanup("timeout");
+        socket.disconnect(true);
+      }
+    }, SESSION_TIMEOUT_MS);
+  } catch (err) {
+    console.error(err);
+
+    if (!socket.disconnected) {
+      socket.emit("output", "\r\nFailed to create sandbox\r\n");
+    }
+
+    await cleanup("start-failed");
+  }
+}
