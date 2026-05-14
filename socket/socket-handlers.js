@@ -1,8 +1,6 @@
 import { startDockerSandbox } from "./sandbox/docker-sandbox.js";
 
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 min
-const MAX_INPUT_BUFFER_BYTES = 64 * 1024; // guard against accidental unbounded buffering
-
 export const setupSocketHandlers = (io) => {
   io.on("connection", (socket) => {
     void handleSocketConnection(socket);
@@ -24,6 +22,29 @@ function normalizeTerminalInput(raw) {
     return data[0];
   }
 
+  // If a UI uses xterm's `onKey`, it may send literal key names.
+  // Map the common ones to real control sequences.
+  switch (data) {
+    case "Enter":
+      return "\r";
+    case "Backspace":
+      return "\u007f";
+    case "Tab":
+      return "\t";
+    case "Escape":
+      return "\u001b";
+    case "ArrowUp":
+      return "\u001b[A";
+    case "ArrowDown":
+      return "\u001b[B";
+    case "ArrowRight":
+      return "\u001b[C";
+    case "ArrowLeft":
+      return "\u001b[D";
+    default:
+      break;
+  }
+
   return data;
 }
 
@@ -33,7 +54,6 @@ async function handleSocketConnection(socket) {
   let sandbox = null;
   let timeoutId = null;
   let cleanedUp = false;
-  let inputBuffer = "";
 
   const cleanup = async (reason) => {
     if (cleanedUp) return;
@@ -84,29 +104,7 @@ async function handleSocketConnection(socket) {
       const normalized = normalizeTerminalInput(data);
       if (!normalized) return;
 
-      // If a client wants line-buffered input, support it implicitly:
-      // buffer until Enter, then send one full command line.
-      // This also prevents the "one char per command" behavior when the UI appends "\r" per key.
-      if (normalized.includes("\r") || normalized.includes("\n")) {
-        const pieces = normalized.replaceAll("\n", "\r").split("\r");
-        for (let i = 0; i < pieces.length; i++) {
-          const part = pieces[i];
-          inputBuffer += part;
-
-          const isLineTerminator = i < pieces.length - 1;
-          if (isLineTerminator) {
-            sandbox.ioStream.write(inputBuffer + "\r");
-            inputBuffer = "";
-          }
-        }
-      } else {
-        inputBuffer += normalized;
-      }
-
-      if (Buffer.byteLength(inputBuffer, "utf8") > MAX_INPUT_BUFFER_BYTES) {
-        inputBuffer = "";
-        sandbox.ioStream.write("\r");
-      }
+      sandbox.ioStream.write(normalized);
     });
 
     // Shell end/close (may not always fire reliably depending on Docker engine)
