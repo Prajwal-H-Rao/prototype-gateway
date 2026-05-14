@@ -1,6 +1,7 @@
 import { startDockerSandbox } from "./sandbox/docker-sandbox.js";
 
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 min
+const MAX_INPUT_BUFFER_BYTES = 64 * 1024; // guard against accidental unbounded buffering
 
 export const setupSocketHandlers = (io) => {
   io.on("connection", (socket) => {
@@ -8,12 +9,31 @@ export const setupSocketHandlers = (io) => {
   });
 };
 
+function normalizeTerminalInput(raw) {
+  if (raw == null) return "";
+
+  // Socket.IO typically delivers strings; allow Buffers too.
+  let data = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+
+  // Normalize Windows-style newlines to a single carriage return for the TTY.
+  data = data.replaceAll("\r\n", "\r");
+
+  // Some UIs mistakenly append Enter to every keystroke (e.g. "l\r").
+  // If it's exactly one non-newline char plus a newline, drop the newline.
+  if (data.length === 2 && data[0] !== "\r" && data[0] !== "\n" && (data[1] === "\r" || data[1] === "\n")) {
+    return data[0];
+  }
+
+  return data;
+}
+
 async function handleSocketConnection(socket) {
   console.log(`Client connected: ${socket.id}`);
 
   let sandbox = null;
   let timeoutId = null;
   let cleanedUp = false;
+  let inputBuffer = "";
 
   const cleanup = async (reason) => {
     if (cleanedUp) return;
@@ -59,12 +79,33 @@ async function handleSocketConnection(socket) {
     // Forward terminal input to the shell
     socket.on("input", (data) => {
       if (!sandbox) return;
-      if (sandbox.ioStream.writable) {
-        if (typeof data === "string" || Buffer.isBuffer(data)) {
-          sandbox.ioStream.write(data);
-        } else if (data != null) {
-          sandbox.ioStream.write(String(data));
+      if (!sandbox.ioStream.writable) return;
+
+      const normalized = normalizeTerminalInput(data);
+      if (!normalized) return;
+
+      // If a client wants line-buffered input, support it implicitly:
+      // buffer until Enter, then send one full command line.
+      // This also prevents the "one char per command" behavior when the UI appends "\r" per key.
+      if (normalized.includes("\r") || normalized.includes("\n")) {
+        const pieces = normalized.replaceAll("\n", "\r").split("\r");
+        for (let i = 0; i < pieces.length; i++) {
+          const part = pieces[i];
+          inputBuffer += part;
+
+          const isLineTerminator = i < pieces.length - 1;
+          if (isLineTerminator) {
+            sandbox.ioStream.write(inputBuffer + "\r");
+            inputBuffer = "";
+          }
         }
+      } else {
+        inputBuffer += normalized;
+      }
+
+      if (Buffer.byteLength(inputBuffer, "utf8") > MAX_INPUT_BUFFER_BYTES) {
+        inputBuffer = "";
+        sandbox.ioStream.write("\r");
       }
     });
 
