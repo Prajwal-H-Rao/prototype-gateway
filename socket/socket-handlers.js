@@ -51,30 +51,30 @@ async function handleSocketConnection(socket) {
 
     console.log(`Container started: ${sandbox.container.id}`);
 
-    // Stream stdout/stderr to client
-    sandbox.shellProcess.stdout.on("data", (data) => {
-      if (!socket.disconnected) socket.emit("output", data.toString());
-    });
-
-    sandbox.shellProcess.stderr.on("data", (data) => {
+    // Stream terminal output to client (TTY stream combines stdout/stderr)
+    sandbox.ioStream.on("data", (data) => {
       if (!socket.disconnected) socket.emit("output", data.toString());
     });
 
     // Forward terminal input to the shell
     socket.on("input", (data) => {
       if (!sandbox) return;
-      if (sandbox.shellProcess.stdin.writable) {
-        sandbox.shellProcess.stdin.write(data);
+      if (sandbox.ioStream.writable) {
+        if (typeof data === "string" || Buffer.isBuffer(data)) {
+          sandbox.ioStream.write(data);
+        } else if (data != null) {
+          sandbox.ioStream.write(String(data));
+        }
       }
     });
 
-    // Shell exit
-    sandbox.shellProcess.on("close", (code) => {
-      if (!socket.disconnected) {
-        socket.emit("output", `\r\nProcess exited with code ${code}\r\n`);
-      }
-      void cleanup("shell-close");
-    });
+    // Shell end/close (may not always fire reliably depending on Docker engine)
+    const onShellEnd = async () => {
+      if (!socket.disconnected) socket.emit("output", "\r\nSession ended\r\n");
+      await cleanup("shell-end");
+    };
+    sandbox.ioStream.once("end", () => void onShellEnd());
+    sandbox.ioStream.once("close", () => void onShellEnd());
 
     // Auto timeout
     timeoutId = setTimeout(async () => {

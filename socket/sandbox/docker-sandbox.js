@@ -1,4 +1,3 @@
-import { spawn } from "child_process";
 import Dockerode from "dockerode";
 
 const docker = new Dockerode();
@@ -10,9 +9,6 @@ function getSandboxContainerOptions({ image }) {
     Tty: true,
 
     OpenStdin: true,
-    AttachStdin: true,
-    AttachStdout: true,
-    AttachStderr: true,
 
     WorkingDir: "/tmp/session",
     User: "sandbox",
@@ -48,17 +44,28 @@ function getSandboxContainerOptions({ image }) {
   };
 }
 
-function spawnInteractiveShell(containerId) {
-  return spawn("docker", ["exec", "-i", containerId, "bash"], {
-    stdio: ["pipe", "pipe", "pipe"],
+async function startInteractiveShell(container) {
+  const exec = await container.exec({
+    Cmd: ["bash", "-i"],
+    AttachStdin: true,
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: true,
+    WorkingDir: "/tmp/session",
+    User: "sandbox",
+    Env: ["HOME=/tmp/session", "TERM=xterm-256color"],
   });
+
+  const ioStream = await exec.start({ hijack: true, stdin: true });
+
+  return { exec, ioStream };
 }
 
 export async function startDockerSandbox({ image = "secure-web-ide" } = {}) {
   const container = await docker.createContainer(getSandboxContainerOptions({ image }));
   await container.start();
 
-  const shellProcess = spawnInteractiveShell(container.id);
+  const { exec, ioStream } = await startInteractiveShell(container);
 
   let stopped = false;
   const stop = async () => {
@@ -66,7 +73,13 @@ export async function startDockerSandbox({ image = "secure-web-ide" } = {}) {
     stopped = true;
 
     try {
-      if (shellProcess && !shellProcess.killed) shellProcess.kill();
+      if (ioStream && !ioStream.destroyed) {
+        try {
+          ioStream.end();
+        } finally {
+          ioStream.destroy();
+        }
+      }
     } catch {
       // best effort
     }
@@ -78,6 +91,5 @@ export async function startDockerSandbox({ image = "secure-web-ide" } = {}) {
     }
   };
 
-  return { container, shellProcess, stop };
+  return { container, exec, ioStream, stop };
 }
-
